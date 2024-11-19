@@ -42,14 +42,30 @@ class Face:
                 return True 
 
         return False
-
-    def detect_person(self, frame: np.ndarray) -> bool:
+    def detect_person(self, frame: np.ndarray) -> Optional[np.ndarray]:
+        """
+        検出した人物の有無を確認し、顔が認識された場合は青枠を付けた画像を返す。
+        
+        Args:
+            frame (np.ndarray): カメラからの入力フレーム
+        
+        Returns:
+            Optional[np.ndarray]: 青枠を付けた画像。顔が検出されない場合は None。
+        """
         image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        img_cropped = self.mtcnn(image)
+        img_cropped = self.mtcnn(image, return_prob=False)  # 顔領域を検出
 
         if img_cropped is not None:
             logging.info("人物が検出されました")
-            return True
+
+            boxes, _ = self.mtcnn.detect(image)
+
+            if boxes is not None:
+                for box in boxes:
+                    x1, y1, x2, y2 = map(int, box) 
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2) 
+
+            return frame 
         else:
             logging.info("人物が検出されませんでした")
-            return False
+            return None

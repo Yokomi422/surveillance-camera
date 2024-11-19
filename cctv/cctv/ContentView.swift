@@ -2,7 +2,10 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var isShowingFrames = false
-
+    @State private var lastDetection: DetectionData?
+    @State private var showAlert: Bool = false
+    @State private var alertMessage: String = ""
+    
     var body: some View {
         VStack {
             // ヘッダー
@@ -76,9 +79,49 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingFrames) {
             FrameViewer()
         }
+        .onAppear {
+            startFetchingDetection()
+        }
+        .alert(isPresented: $showAlert) {
+            Alert(title: Text("検出通知"), message: Text(alertMessage), dismissButton: .default(Text("OK")))
+        }
+    }
+
+    func startFetchingDetection() {
+        Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+            fetchDetectionData()
+        }
+    }
+
+    func fetchDetectionData() {
+        guard let url = URL(string: "http://localhost:8080/get_detection") else { return }
+
+        URLSession.shared.dataTask(with: url) { data, response, error in
+            if let error = error {
+                print("検出データの取得エラー: \(error.localizedDescription)")
+                return
+            }
+
+            guard let data = data else {
+                print("検出データがありません")
+                return
+            }
+
+            do {
+                let detection = try JSONDecoder().decode(DetectionData.self, from: data)
+                DispatchQueue.main.async {
+                    if detection != lastDetection {
+                        alertMessage = "ステータス: \(detection.status)\n詳細: \(detection.detail)"
+                        showAlert = true
+                        lastDetection = detection
+                    }
+                }
+            } catch {
+                print("検出データのデコードエラー: \(error.localizedDescription)")
+            }
+        }.resume()
     }
 }
-
 
 #Preview {
     ContentView()
