@@ -6,28 +6,42 @@ struct ContentView: View {
     @State private var showAlert: Bool = false
     @State private var alertMessage: String = ""
     
+    @State private var isShowingAddFace = false // 「認証を追加」ビューの表示制御
+    
     var body: some View {
         VStack {
             // ヘッダー
             HStack {
-                Image(systemName: "person.circle")
-                    .resizable()
-                    .frame(width: 40, height: 40)
-                    .padding()
+                // 左上のアイコンと「認証を追加」ボタン
+                Button(action: {
+                    isShowingAddFace = true
+                }) {
+                    Image(systemName: "person.circle")
+                        .resizable()
+                        .frame(width: 40, height: 40)
+                        .padding()
+                }
+                .sheet(isPresented: $isShowingAddFace) {
+                    AddFaceView()
+                }
+                
                 Spacer()
+                
                 Text("監視カメラ")
                     .font(.title2)
                     .fontWeight(.bold)
+                
                 Spacer()
+                
                 Image(systemName: "gearshape")
                     .resizable()
                     .frame(width: 30, height: 30)
                     .padding()
             }
             .padding(.horizontal)
-
+    
             Spacer()
-
+    
             // メインボタン
             VStack {
                 Text("ようこそ")
@@ -46,9 +60,9 @@ struct ContentView: View {
                         .padding(.horizontal, 20)
                 }
             }
-
+    
             Spacer()
-
+    
             // フッター（タブ風）
             HStack {
                 VStack {
@@ -57,14 +71,14 @@ struct ContentView: View {
                         .font(.footnote)
                 }
                 .frame(maxWidth: .infinity)
-
+    
                 VStack {
                     Image(systemName: "video.fill")
                     Text("映像")
                         .font(.footnote)
                 }
                 .frame(maxWidth: .infinity)
-
+    
                 VStack {
                     Image(systemName: "person.fill")
                     Text("プロフィール")
@@ -86,27 +100,27 @@ struct ContentView: View {
             Alert(title: Text("検出通知"), message: Text(alertMessage), dismissButton: .default(Text("OK")))
         }
     }
-
+    
     func startFetchingDetection() {
         Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
             fetchDetectionData()
         }
     }
-
+    
     func fetchDetectionData() {
         guard let url = URL(string: "http://localhost:8080/get_detection") else { return }
-
+    
         URLSession.shared.dataTask(with: url) { data, response, error in
             if let error = error {
                 print("検出データの取得エラー: \(error.localizedDescription)")
                 return
             }
-
+    
             guard let data = data else {
                 print("検出データがありません")
                 return
             }
-
+    
             do {
                 let detection = try JSONDecoder().decode(DetectionData.self, from: data)
                 DispatchQueue.main.async {
@@ -123,6 +137,8 @@ struct ContentView: View {
     }
 }
 
-#Preview {
-    ContentView()
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
+    }
 }

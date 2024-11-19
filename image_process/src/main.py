@@ -47,8 +47,8 @@ def main():
 
             if similarity < similarity_threshold:
                 logging.info("difference detected")
-                person_detected = face.detect_person(current_frame)
-                if person_detected:
+                blue_boxed_frame = face.detect_person(current_frame)
+                if blue_boxed_frame is not None:
                     logging.info("person detected")
                     feature_vector = face.feature_vector(current_frame)
 
@@ -60,11 +60,12 @@ def main():
                     else:
                         logging.info("person not on db is detected")
                         data = DetectionData(status="unknown person detected", detail="person not on db is detected")
+                    send_detection_data_to_server(blue_boxed_frame, data)
                 else:
                     logging.info("no person detected")
                     data = DetectionData(status="something detected", detail="no person detected")
+                    send_detection_data_to_server(current_frame, data)
 
-                send_detection_data_to_server(current_frame, data)
             else:
                 # 差分がない場合でもフレームを送信する場合は以下を有効にする
                 data = DetectionData(status="no difference detected", detail="background unchanged")
