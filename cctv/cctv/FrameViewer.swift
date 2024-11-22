@@ -3,14 +3,13 @@ import Vision
 import CoreImage
 import CoreImage.CIFilterBuiltins
 
-// UIImageの向きをCGImagePropertyOrientationに変換する拡張
 extension CGImagePropertyOrientation {
     init(_ uiOrientation: UIImage.Orientation) {
         switch uiOrientation {
         case .up: self = .up
-        case .down: self = .down   // 180 deg rotation
-        case .left: self = .left   // 90 deg CCW
-        case .right: self = .right // 90 deg CW
+        case .down: self = .down
+        case .left: self = .left
+        case .right: self = .right
         case .upMirrored: self = .upMirrored
         case .downMirrored: self = .downMirrored
         case .leftMirrored: self = .leftMirrored
@@ -33,12 +32,12 @@ struct FrameViewer: View {
     @State private var isRecording: Bool = false
     @State private var statusMessage: String = "映像を読み込み中..."
     
-    @State private var lastDetection: DetectionData? // 前回の検出データ
-    @State private var showAlert: Bool = false
-    @State private var alertMessage: String = ""
+    @State private var lastDetection: DetectionData?
+    @State private var backgroundChanged: Bool = false  // 背景の変化を追跡する変数を追加
     
-    // 画像処理用のコンテキスト
     let ciContext = CIContext()
+    
+    @State private var imageScale: CGFloat = 1.0
 
     var body: some View {
         VStack {
@@ -52,11 +51,20 @@ struct FrameViewer: View {
             // 映像表示
             ZStack {
                 if let image = currentFrame {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .cornerRadius(10)
-                        .padding()
+                    GeometryReader { geometry in
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .scaleEffect(imageScale)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .gesture(
+                                MagnificationGesture()
+                                    .onChanged { value in
+                                        self.imageScale = value.magnitude
+                                    }
+                            )
+                    }
+                    .padding()
                 } else {
                     VStack {
                         ProgressView() // ローディングインジケーター
@@ -71,9 +79,27 @@ struct FrameViewer: View {
             .cornerRadius(10)
             .padding()
             
+            if currentFrame != nil {
+                HStack {
+                    Text("画像サイズ")
+                    Slider(value: $imageScale, in: 0.5...3.0, step: 0.1)
+                        .padding()
+                }
+                .padding(.horizontal)
+            }
+            
             Spacer()
             
-            // ボタンとステータスバー
+            // 背景変化を示すランプを追加
+            HStack {
+                Spacer()
+                Circle()
+                    .fill(self.backgroundChanged ? Color.red : Color.green)
+                    .frame(width: 20, height: 20)
+                Spacer()
+            }
+            .padding()
+            
             HStack {
                 Button(action: toggleRecording) {
                     HStack {
@@ -109,11 +135,7 @@ struct FrameViewer: View {
         }
         .background(Color(UIColor.systemGroupedBackground))
         .navigationBarHidden(true) // ナビゲーションバーを非表示
-        .alert(isPresented: $showAlert) {
-            Alert(title: Text("検出通知"), message: Text(alertMessage), dismissButton: .default(Text("OK")))
-        }
     }
-
     // フレームを取得するタイマー
     func startFetchingFrames() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.033, repeats: true) { _ in
@@ -132,18 +154,9 @@ struct FrameViewer: View {
 
         URLSession.shared.dataTask(with: url) { data, response, error in
             if let data = data, let uiImage = UIImage(data: data) {
-                // 顔検出とモザイク処理を行う
-                if let processedImage = self.detectAndBlurFaces(in: uiImage) {
-                    DispatchQueue.main.async {
-                        self.currentFrame = processedImage
-                        self.statusMessage = "映像取得成功"
-                    }
-                } else {
-                    // 処理が失敗した場合、元の画像を表示
-                    DispatchQueue.main.async {
-                        self.currentFrame = uiImage
-                        self.statusMessage = "映像取得成功（モザイク未適用）"
-                    }
+                DispatchQueue.main.async {
+                    self.currentFrame = uiImage
+                    self.statusMessage = "映像取得成功"
                 }
             } else if let error = error {
                 DispatchQueue.main.async {
@@ -178,11 +191,9 @@ struct FrameViewer: View {
             do {
                 let detection = try JSONDecoder().decode(DetectionData.self, from: data)
                 DispatchQueue.main.async {
-                    if detection != lastDetection {
-                        alertMessage = "ステータス: \(detection.status)\n詳細: \(detection.detail)"
-                        showAlert = true
-                        lastDetection = detection
-                    }
+                    // 背景の変化をチェックし、ランプの色を変更
+                    self.backgroundChanged = detection.status != "no difference detected"
+                    self.lastDetection = detection
                 }
             } catch {
                 print("検出データのデコードエラー: \(error.localizedDescription)")
@@ -193,76 +204,6 @@ struct FrameViewer: View {
     func toggleRecording() {
         isRecording.toggle()
         statusMessage = isRecording ? "録画中..." : "待機中..."
-    }
-
-    func detectAndBlurFaces(in image: UIImage) -> UIImage? {
-        guard let ciImage = CIImage(image: image) else { return nil }
-
-        // 画像の向きを取得して変換
-        let cgOrientation = CGImagePropertyOrientation(image.imageOrientation)
-
-        // 顔検出のリクエストを作成
-        let faceDetectionRequest = VNDetectFaceRectanglesRequest()
-
-        // ハンドラを作成（画像の向きを指定）
-        let handler = VNImageRequestHandler(ciImage: ciImage, orientation: cgOrientation, options: [:])
-
-        do {
-            // 顔検出を実行
-            try handler.perform([faceDetectionRequest])
-
-            // 検出された顔の矩形を取得
-            if let results = faceDetectionRequest.results as? [VNFaceObservation], !results.isEmpty {
-                print("Number of faces detected: \(results.count)")
-
-                var maskedImage = ciImage
-                let imageSize = ciImage.extent.size
-
-                for face in results {
-                    // 顔の矩形を取得
-                    let boundingBox = face.boundingBox
-
-                    // 座標を変換
-                    let faceRect = CGRect(
-                        x: boundingBox.origin.x * imageSize.width,
-                        y: boundingBox.origin.y * imageSize.height,
-                        width: boundingBox.size.width * imageSize.width,
-                        height: boundingBox.size.height * imageSize.height
-                    )
-
-                    // 顔部分を切り抜き
-                    let faceImage = maskedImage.cropped(to: faceRect)
-
-                    // モザイク（ピクセレート）フィルターを適用
-                    let pixelateFilter = CIFilter.pixellate()
-                    pixelateFilter.inputImage = faceImage
-                    pixelateFilter.scale = 20  // モザイクの粗さを調整
-
-                    guard let pixelatedFace = pixelateFilter.outputImage else { continue }
-
-                    // 顔部分の位置に合わせてピクセレートされた顔画像を移動
-                    let transform = CGAffineTransform(translationX: faceRect.origin.x, y: faceRect.origin.y)
-                    let transformedPixelatedFace = pixelatedFace.transformed(by: transform)
-
-                    // モザイク処理した顔を元の画像に合成
-                    maskedImage = transformedPixelatedFace.composited(over: maskedImage)
-                }
-
-                // 画像を生成（元の画像の向きを保持）
-                if let cgImage = ciContext.createCGImage(maskedImage, from: maskedImage.extent) {
-                    return UIImage(cgImage: cgImage, scale: image.scale, orientation: image.imageOrientation)
-                }
-            } else {
-                print("No faces detected.")
-                return image
-            }
-        } catch {
-            print("Failed to perform face detection: \(error)")
-            // エラーが発生した場合、元の画像を返す
-            return image
-        }
-
-        return nil
     }
 }
 

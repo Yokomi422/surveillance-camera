@@ -96,9 +96,6 @@ struct ContentView: View {
         .onAppear {
             startFetchingDetection()
         }
-        .alert(isPresented: $showAlert) {
-            Alert(title: Text("検出通知"), message: Text(alertMessage), dismissButton: .default(Text("OK")))
-        }
     }
     
     func startFetchingDetection() {
