@@ -7,10 +7,12 @@ from pydantic import BaseModel
 import os
 import threading
 import logging
-import json
+import numpy as np
+import cv2  # OpenCV のインポートを追加
+from PIL import Image
 
 from db.client import MongoDBClient, get_client
-from utils.face import Face
+from utils.face import FaceRecognition
 
 app = FastAPI()
 
@@ -38,8 +40,8 @@ class DetectionData(BaseModel):
 mongo_client = get_client("face")
 db = mongo_client.connect()
 
-# Faceクラスのインスタンス化
-face = Face(mongo_client)
+# FaceRecognitionクラスのインスタンス化
+face_recognition = FaceRecognition(mongo_client)
 
 @app.post("/upload_frame")
 async def upload_frame(image: UploadFile = File(...)):
@@ -48,15 +50,30 @@ async def upload_frame(image: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Invalid image type")
     
     try:
+        # 画像を読み込み、OpenCVの形式に変換
+        image_data = await image.read()
+        np_arr = np.frombuffer(image_data, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        if frame is None:
+            logging.error("Failed to decode image")
+            raise HTTPException(status_code=400, detail="Failed to decode image. Ensure the image is valid.")
+
+        # ユーザーの確認
+        name, similarity = face_recognition.verify_user(frame)
+        logging.info(f"Detected person: {name} (similarity: {similarity:.3f})")
+
+        # フレームにアノテーションを追加
+        annotated_frame = face_recognition.annotate_frame(frame, name)
+
+        # アノテーションが追加されたフレームを保存
         with latest_frame_lock:
-            with open(LATEST_FRAME_PATH, "wb") as buffer:
-                content = await image.read()
-                buffer.write(content)
-        logging.info("Frame received and saved")
-        return {"message": "Frame received and saved"}
+            cv2.imwrite(LATEST_FRAME_PATH, annotated_frame)
+        logging.info("Frame received, processed, and saved with annotations")
+        return {"message": "Frame received, processed, and saved with annotations"}
     except Exception as e:
-        logging.error(f"Error saving image: {e}")
-        raise HTTPException(status_code=500, detail="Failed to save image")
+        logging.error(f"Error processing image: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process and save image")
 
 @app.get("/get_frame", response_class=FileResponse)
 async def get_frame():
@@ -79,14 +96,29 @@ async def notification(
         raise HTTPException(status_code=400, detail="Invalid image type")
 
     try:
+        # 画像を読み込み、OpenCVの形式に変換
+        image_data = await image.read()
+        np_arr = np.frombuffer(image_data, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        if frame is None:
+            logging.error("Failed to decode image")
+            raise HTTPException(status_code=400, detail="Failed to decode image. Ensure the image is valid.")
+
+        # ユーザーの確認
+        name, similarity = face_recognition.verify_user(frame)
+        logging.info(f"Detected person: {name} (similarity: {similarity:.3f})")
+
+        # フレームにアノテーションを追加
+        annotated_frame = face_recognition.annotate_frame(frame, name)
+
+        # アノテーションが追加されたフレームを保存
         with latest_frame_lock:
-            with open(LATEST_FRAME_PATH, "wb") as buffer:
-                content = await image.read()
-                buffer.write(content)
-        logging.info("Notification received and image saved")
+            cv2.imwrite(LATEST_FRAME_PATH, annotated_frame)
+        logging.info("Notification received, image processed, and saved with annotations")
     except Exception as e:
-        logging.error(f"Error saving image: {e}")
-        raise HTTPException(status_code=500, detail="Failed to save image")
+        logging.error(f"Error processing image: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process and save image")
 
     with detection_lock:
         latest_detection = DetectionData(status=status, detail=detail)
@@ -115,24 +147,20 @@ async def register_face(
         raise HTTPException(status_code=400, detail="Invalid image type. Only JPEG and PNG are supported.")
     
     try:
-        temp_image_dir = "temp"
-        os.makedirs(temp_image_dir, exist_ok=True)
-        temp_image_path = os.path.join(temp_image_dir, f"{name}_temp.jpg")
-        with open(temp_image_path, "wb") as buffer:
-            content = await image.read()
-            buffer.write(content)
-        
-        encoding = face.extract_face_encoding(temp_image_path)
-        
-        if encoding is None:
-            logging.error("Failed to extract face encoding: Encoding is None.")
-            os.remove(temp_image_path)
-            raise HTTPException(status_code=400, detail="No face detected or the image is not clear enough.")
-        
-        face.save_face(name=name, encoding=encoding)
-        
-        os.remove(temp_image_path)
-        
+        # 画像を読み込み、OpenCVの形式に変換
+        image_data = await image.read()
+        np_arr = np.frombuffer(image_data, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        if frame is None:
+            logging.error("Failed to decode image")
+            raise HTTPException(status_code=400, detail="Failed to decode image. Ensure the image is valid.")
+
+        # 画像をリストにして登録（単一の画像でもリストで渡す必要があります）
+        images = [frame]
+
+        face_recognition.register_user(name=name, images=images)
+
         logging.info(f"Face registered successfully for user: {name}")
         return {"message": f"Face registered successfully for user: {name}"}
     

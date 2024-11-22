@@ -3,30 +3,31 @@ import cv2
 import time
 import numpy as np
 from utils.background import Background
-from utils.face import Face
+from utils.face import FaceRecognition
 from db.client import get_client
 from utils.http import send_detection_data_to_server, DetectionData
 from PIL import Image
 
 logging.basicConfig(
-    format='%(levelname)s: %(message)s'
+    format='%(levelname)s: %(message)s',
+    level=logging.INFO  # ログレベルを INFO に設定
 )
 
 similarity_threshold = 0.85
 
 def main():
-    logging.info("surveillance system started")
+    logging.info("Surveillance system started")
 
     background_client = get_client("background")
     face_client = get_client("face")
 
     background = Background(background_client)
-    face_recognition_module = Face(face_client)
+    face_recognition_module = FaceRecognition(face_client)
 
-    logging.info("background image saving started")
+    logging.info("Background image saving started")
     background.save_background()
 
-    logging.info("background image loading started")
+    logging.info("Background image loading started")
     background.load_background()
 
     cap = cv2.VideoCapture(0)
@@ -47,27 +48,30 @@ def main():
                 continue
 
             if similarity < similarity_threshold:
-                logging.info("difference detected")
+                logging.info("Difference detected")
 
                 # フレームを RGB に変換
                 image_rgb = cv2.cvtColor(current_frame, cv2.COLOR_BGR2RGB)
                 pil_image = Image.fromarray(image_rgb)
+
+                # MTCNN を使用して顔検出
                 boxes, _ = face_recognition_module.mtcnn.detect(pil_image)
 
                 if boxes is not None:
-                    # 特徴量抽出
-                    feature_vector = face_recognition_module.feature_vector(image_rgb, boxes)
+                    names = []
+                    for box in boxes:
+                        x1, y1, x2, y2 = map(int, box)
+                        face_crop = current_frame[y1:y2, x1:x2]
 
-                    # 顔認識
-                    name, score = face_recognition_module.compare_with_all_faces(feature_vector)
-                    logging.info(f"Detected person: {name} (score: {score:.3f})")
+                        # ユーザーの確認
+                        name, score = face_recognition_module.verify_user(face_crop)
+                        logging.info(f"Detected person: {name} (score: {score:.3f})")
+                        names.append(name)
 
-                    # 顔にアノテーション
-                    annotated_frame_rgb = face_recognition_module.detect_person(image_rgb, name)
-                    # フレームを BGR に戻す
-                    annotated_frame = cv2.cvtColor(annotated_frame_rgb, cv2.COLOR_RGB2BGR)
+                    # フレームにアノテーションを追加
+                    annotated_frame = face_recognition_module.annotate_frame(current_frame, boxes, names)
 
-                    data = DetectionData(status="person detected", detail=f"Detected person: {name}")
+                    data = DetectionData(status="person detected", detail=f"Detected persons: {names}")
                     send_detection_data_to_server(annotated_frame, data)
                 else:
                     logging.info("No faces detected.")
@@ -77,14 +81,14 @@ def main():
                 # 差分がない場合
                 data = DetectionData(status="no difference detected", detail="background unchanged")
                 send_detection_data_to_server(current_frame, data)
-                pass
 
             time.sleep(0.01)
 
     except KeyboardInterrupt:
-        logging.info("surveillance system stopped")
+        logging.info("Surveillance system stopped")
     finally:
         cap.release()
+        cv2.destroyAllWindows()  # OpenCV のウィンドウを閉じる
 
 if __name__ == '__main__':
     main()

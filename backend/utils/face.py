@@ -1,172 +1,151 @@
-"""
-face.py
-"""
-
 import cv2
-import logging
 import numpy as np
-from PIL import Image
-from typing import Optional, Tuple
-from facenet_pytorch import MTCNN
+import logging
+from deepface import DeepFace
 import os
 from datetime import datetime
-from fastapi import HTTPException
+from typing import List, Optional, Tuple
+from db.client import MongoDBClient  # MongoDBクライアントを正しくインポート
 
-from db.client import MongoDBClient
-
-class Face:
+class FaceRecognition:
     def __init__(self, db_client: MongoDBClient) -> None:
-        self.db = db_client.connect()
+        self.model_name = 'ArcFace'
+        self.db_client = db_client
+        self.db = self.db_client.connect()
         self.collection = self.db["faces"]
-        self.mtcnn = MTCNN()
-        os.makedirs("registered_faces", exist_ok=True)
+        self.registered_users = []
 
-        # SFace モデルのパス
-        self.face_recognizer_model = "face_recognition_sface_2021dec.onnx"
+        # データベースから登録済みの顔データを読み込みます
+        self.load_registered_embeddings()
 
-        # OpenCV の FaceRecognizerSF を使用してモデルを読み込み
-        self.face_recognizer = cv2.FaceRecognizerSF_create(
-            self.face_recognizer_model, ""
-        )
-
-        # 類似度の閾値
-        self.COSINE_THRESHOLD = 0.363
-        self.NORM_L2_THRESHOLD = 1.128
-        
-    def feature_vector(self, frame: np.ndarray, boxes: np.ndarray) -> Optional[np.ndarray]:
+    def register_user(self, name: str, images: List[np.ndarray]) -> None:
         """
-        フレームと検出された顔のバウンディングボックスから顔の特徴ベクトルを抽出します。
+        ユーザーを登録します。
 
         Args:
-            frame (np.ndarray): カメラからの入力フレーム
-            boxes (np.ndarray): 検出された顔のバウンディングボックス
-
-        Returns:
-            Optional[np.ndarray]: 顔の特徴ベクトル。顔が検出されない場合は None。
+            name (str): ユーザーの名前
+            images (List[np.ndarray]): ユーザーの顔画像のリスト
         """
-        if boxes is None or len(boxes) == 0:
-            logging.info("顔が検出されませんでした。")
-            return None
-
-        # 最初の顔のみを使用（複数の顔に対応する場合はループを追加）
-        box = boxes[0]
-
-        # MTCNN の出力は [x1, y1, x2, y2] なので、OpenCV の形式に変換
-        x1, y1, x2, y2 = box  # 座標は float 型のまま使用
-
-        # 幅と高さを計算
-        w = x2 - x1
-        h = y2 - y1
-
-        # NumPy 配列に変換し、データ型を指定
-        face_box = np.array([[x1, y1, w, h]], dtype=np.float32)  # 形状を (1, 4) にする
-
-        # 顔をアラインメント
-        aligned_face = self.face_recognizer.alignCrop(frame, face_box)
-
-        # 特徴量を抽出
-        feature = self.face_recognizer.feature(aligned_face)
-
-        return feature
-    
-    def compare_with_all_faces(self, feature_vector: np.ndarray) -> Tuple[str, float]:
-        """
-        入力された特徴ベクトルをデータベース内の全ての特徴ベクトルと比較します。
-
-        Args:
-            feature_vector (np.ndarray): 入力された顔の特徴ベクトル
-
-        Returns:
-            Tuple[str, float]: マッチした人の名前とスコア。マッチしない場合は ("unknown", 0.0)。
-        """
-        if feature_vector is None:
-            logging.info("入力の特徴ベクトルが None です。")
-            return "unknown", 0.0
-
-        max_score = 0.0
-        best_match_name = "unknown"
-
-        for face_data in self.collection.find():
-            stored_vector = np.array(face_data.get("feature_vector"), dtype=np.float32)
-            if stored_vector is None:
-                print(f"ユーザーID: {face_data['user_id']}, 名前: {face_data['name']} の特徴ベクトルが存在しません。")
-                continue
-
-            score = self.face_recognizer.match(feature_vector, stored_vector, cv2.FaceRecognizerSF_FR_COSINE)
-
-            if score > self.COSINE_THRESHOLD and score > max_score:
-                max_score = score
-                best_match_name = face_data["name"]
-
-        return best_match_name, max_score
-
-    def detect_person(self, frame: np.ndarray, name: str = "unknown") -> Optional[np.ndarray]:
-        """
-        検出した人物の有無を確認し、顔が認識された場合は青枠と名前を付けた画像を返す。
-
-        Args:
-            frame (np.ndarray): カメラからの入力フレーム
-            name (str): 認識された人物の名前（デフォルトは "unknown"）
-
-        Returns:
-            Optional[np.ndarray]: 青枠と名前を付けた画像。顔が検出されない場合は None。
-        """
-        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        boxes, _ = self.mtcnn.detect(image)
-
-        if boxes is not None:
-            logging.info(f"人物が検出されました: {name}")
-
-            for box in boxes:
-                x1, y1, x2, y2 = map(int, box)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                # 顔の上に名前を表示
-                cv2.putText(frame, name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                            8, (255, 0, 0), 4)
-
-            return frame
-        else:
-            logging.info("人物が検出されませんでした")
-            return None
-
-    def extract_face_encoding(self, image_path: str) -> Optional[np.ndarray]:
-        """
-        画像ファイルから顔の特徴ベクトルを抽出します。
-
-        Args:
-            image_path (str): 画像ファイルのパス
-
-        Returns:
-            Optional[np.ndarray]: 顔の特徴ベクトル。顔が検出されない場合は None。
-        """
-        image = cv2.imread(image_path)
-        if image is None:
-            logging.error(f"画像を読み込めませんでした: {image_path}")
-            return None
-
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(image_rgb)
-        boxes, _ = self.mtcnn.detect(pil_image)
-
-        feature_vector = self.feature_vector(image, boxes)
-
-        if feature_vector is not None:
-            return feature_vector
-        else:
-            logging.error("顔が検出されませんでした。")
-            return None
-
-    def save_face(self, name: str, encoding: np.ndarray) -> None:
         try:
+            embeddings = []
+            for idx, image in enumerate(images):
+                # 特徴ベクトルの取得
+                embedding_objs = DeepFace.represent(img_path=image, model_name=self.model_name,
+                                                    detector_backend='mtcnn', enforce_detection=True)
+                if len(embedding_objs) == 0:
+                    logging.error(f"サンプル {idx + 1} で顔が検出されませんでした。")
+                    continue
+                embedding = embedding_objs[0]["embedding"]
+                embeddings.append(embedding)
+
+            if len(embeddings) == 0:
+                logging.error("有効な顔が検出されませんでした。登録を中止します。")
+                return
+
+            # MongoDBに保存
             user_id = self.collection.count_documents({}) + 1
             face_data = {
                 "user_id": user_id,
                 "name": name,
-                "feature_vector": encoding.tolist(),
+                "embeddings": embeddings,
                 "created_at": datetime.utcnow().isoformat()
             }
             self.collection.insert_one(face_data)
             logging.info(f"ユーザー {name} の顔データが保存されました。")
+
+            # 登録ユーザーのリストを更新
+            self.registered_users.append(face_data)
         except Exception as e:
-            logging.error(f"データベースへの保存中にエラーが発生しました: {e}")
-            raise HTTPException(status_code=500, detail="Failed to save face data.")
+            logging.error(f"ユーザーの登録中にエラーが発生しました: {e}")
+
+    def load_registered_embeddings(self) -> None:
+        """
+        登録されたユーザーの特徴ベクトルをデータベースから読み込みます。
+        """
+        try:
+            self.registered_users = list(self.collection.find())
+            logging.info(f"{len(self.registered_users)} 人のユーザーをデータベースから読み込みました。")
+        except Exception as e:
+            logging.error(f"データベースからの読み込み中にエラーが発生しました: {e}")
+            self.registered_users = []
+
+    def verify_user(self, image: np.ndarray) -> Tuple[str, float]:
+        """
+        入力画像の人物が登録されたadminユーザーかどうかを確認します。
+
+        Args:
+            image (np.ndarray): 検証する顔画像
+
+        Returns:
+            Tuple[str, float]: (一致したユーザーの名前または "unknown", 類似度スコア)
+        """
+        try:
+            # 特徴ベクトルの取得
+            embedding_objs = DeepFace.represent(img_path=image, model_name=self.model_name,
+                                                detector_backend='mtcnn', enforce_detection=True)
+            if len(embedding_objs) == 0:
+                logging.error("顔が検出されませんでした。")
+                return "unknown", 0.0
+            embedding = embedding_objs[0]["embedding"]
+
+            # 登録されたadminユーザーとの比較
+            admin_user = None
+            for user in self.registered_users:
+                if user["name"] == "admin":
+                    admin_user = user
+                    break
+
+            if admin_user is None:
+                logging.error("adminユーザーが登録されていません。")
+                return "unknown", 0.0
+
+            highest_similarity = -1  # 初期値
+
+            user_embeddings = admin_user["embeddings"]
+            for registered_embedding in user_embeddings:
+                registered_embedding = np.array(registered_embedding)
+                # コサイン類似度の計算
+                similarity = np.dot(registered_embedding, embedding) / (np.linalg.norm(registered_embedding) * np.linalg.norm(embedding))
+                if similarity > highest_similarity:
+                    highest_similarity = similarity
+
+            # 閾値を設定（0.7）
+            threshold = 0.7
+            if highest_similarity >= threshold:
+                return "admin", highest_similarity
+            else:
+                return "unknown", highest_similarity
+        except Exception as e:
+            logging.error(f"ユーザーの検証中にエラーが発生しました: {e}")
+            return "unknown", 0.0
+
+    def annotate_frame(self, frame: np.ndarray, name: str) -> np.ndarray:
+        """
+        フレームに検出された顔の位置と名前を描画します。
+
+        Args:
+            frame (np.ndarray): 元のフレーム
+            name (str): 検出されたユーザーの名前
+
+        Returns:
+            np.ndarray: アノテーションが追加されたフレーム
+        """
+        # 顔検出
+        face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        detected_faces = face_detector.detectMultiScale(gray, 1.3, 5)
+
+        for (x, y, w, h) in detected_faces:
+            # 類似度の閾値チェックは verify_user で行っているため、ここでは name を使用
+            if name == "admin":
+                label = "admin"
+                color = (0, 255, 0)  # 緑
+            else:
+                label = "unknown"
+                color = (0, 0, 255)  # 赤
+
+            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+            cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.9, color, 2)
+
+        return frame
