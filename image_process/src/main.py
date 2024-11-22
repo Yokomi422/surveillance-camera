@@ -1,17 +1,18 @@
 import logging
 import cv2
 import time
-
+import numpy as np
 from utils.background import Background
 from utils.face import Face
 from db.client import get_client
 from utils.http import send_detection_data_to_server, DetectionData
+from PIL import Image
 
 logging.basicConfig(
     format='%(levelname)s: %(message)s'
 )
 
-similarity_threshold = 0.85 
+similarity_threshold = 0.85
 
 def main():
     logging.info("surveillance system started")
@@ -20,7 +21,7 @@ def main():
     face_client = get_client("face")
 
     background = Background(background_client)
-    face = Face(face_client)
+    face_recognition_module = Face(face_client)
 
     logging.info("background image saving started")
     background.save_background()
@@ -47,27 +48,33 @@ def main():
 
             if similarity < similarity_threshold:
                 logging.info("difference detected")
-                blue_boxed_frame = face.detect_person(current_frame)
-                if blue_boxed_frame is not None:
-                    logging.info("person detected")
-                    feature_vector = face.feature_vector(current_frame)
 
-                    on_db = face.compare_with_all_faces(feature_vector)
-                    data = None
-                    if on_db:
-                        logging.info("person detected on db")
-                        data = DetectionData(status="known person detected", detail="person detected on db")
-                    else:
-                        logging.info("person not on db is detected")
-                        data = DetectionData(status="unknown person detected", detail="person not on db is detected")
-                    send_detection_data_to_server(blue_boxed_frame, data)
+                # フレームを RGB に変換
+                image_rgb = cv2.cvtColor(current_frame, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(image_rgb)
+                boxes, _ = face_recognition_module.mtcnn.detect(pil_image)
+
+                if boxes is not None:
+                    # 特徴量抽出
+                    feature_vector = face_recognition_module.feature_vector(image_rgb, boxes)
+
+                    # 顔認識
+                    name, score = face_recognition_module.compare_with_all_faces(feature_vector)
+                    logging.info(f"Detected person: {name} (score: {score:.3f})")
+
+                    # 顔にアノテーション
+                    annotated_frame_rgb = face_recognition_module.detect_person(image_rgb, name)
+                    # フレームを BGR に戻す
+                    annotated_frame = cv2.cvtColor(annotated_frame_rgb, cv2.COLOR_RGB2BGR)
+
+                    data = DetectionData(status="person detected", detail=f"Detected person: {name}")
+                    send_detection_data_to_server(annotated_frame, data)
                 else:
-                    logging.info("no person detected")
-                    data = DetectionData(status="something detected", detail="no person detected")
+                    logging.info("No faces detected.")
+                    data = DetectionData(status="face not detected", detail="No faces detected")
                     send_detection_data_to_server(current_frame, data)
-
             else:
-                # 差分がない場合でもフレームを送信する場合は以下を有効にする
+                # 差分がない場合
                 data = DetectionData(status="no difference detected", detail="background unchanged")
                 send_detection_data_to_server(current_frame, data)
                 pass

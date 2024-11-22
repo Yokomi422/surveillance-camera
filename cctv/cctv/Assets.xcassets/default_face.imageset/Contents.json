@@ -1,7 +1,7 @@
 {
   "images" : [
     {
-      "filename" : "default_face.jpg",
+      "filename" : "face.jpg",
       "idiom" : "universal",
       "scale" : "1x"
     },

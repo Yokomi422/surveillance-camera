@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "backend"
+version = "0.1.0"
+description = ""
+authors = ["Rei Tsukada <rayzou1120@icloud.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.115.5"
+pydantic = "^2.9.2"
+uvicorn = {extras = ["standard"], version = "^0.32.0"}
+python-multipart = "^0.0.17"
+pymongo = "^4.10.1"
+pillow = "10.2.0"
+facenet-pytorch = "^2.6.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

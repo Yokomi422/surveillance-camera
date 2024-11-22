@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "image-process"
+version = "0.1.0"
+description = ""
+authors = ["Rei Tsukada <rayzou1120@icloud.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+opencv-python = "^4.10.0.84"
+numpy = "^1.24.0"
+facenet-pytorch = "^2.6.0"
+matplotlib = "^3.9.2"
+pymongo = "^4.10.1"
+faiss-cpu = "^1.9.0"
+scikit-image = "^0.24.0"
+face-recognition = "^1.3.0"
+lxml = "^5.3.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

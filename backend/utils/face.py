@@ -1,11 +1,12 @@
-# face_module.py
+"""
+face.py
+"""
 
 import cv2
 import logging
 import numpy as np
 from PIL import Image
-from typing import Optional
-import face_recognition
+from typing import Optional, Tuple
 from facenet_pytorch import MTCNN
 import os
 from datetime import datetime
@@ -20,77 +21,110 @@ class Face:
         self.mtcnn = MTCNN()
         os.makedirs("registered_faces", exist_ok=True)
 
-    def feature_vector(self, frame: np.ndarray) -> Optional[np.ndarray]:
-        """
-        フレームから顔の特徴ベクトルを抽出します。
+        # SFace モデルのパス
+        self.face_recognizer_model = "face_recognition_sface_2021dec.onnx"
+
+        # OpenCV の FaceRecognizerSF を使用してモデルを読み込み
+        self.face_recognizer = cv2.FaceRecognizerSF_create(
+            self.face_recognizer_model, ""
+        )
+
+        # 類似度の閾値
+        self.COSINE_THRESHOLD = 0.363
+        self.NORM_L2_THRESHOLD = 1.128
         
+    def feature_vector(self, frame: np.ndarray, boxes: np.ndarray) -> Optional[np.ndarray]:
+        """
+        フレームと検出された顔のバウンディングボックスから顔の特徴ベクトルを抽出します。
+
         Args:
             frame (np.ndarray): カメラからの入力フレーム
-        
+            boxes (np.ndarray): 検出された顔のバウンディングボックス
+
         Returns:
-            Optional[np.ndarray]: 顔の特徴ベクトル。顔が検出されない場合はNone。
+            Optional[np.ndarray]: 顔の特徴ベクトル。顔が検出されない場合は None。
         """
-        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        face_encodings = face_recognition.face_encodings(image)
-        if face_encodings:
-            return face_encodings[0]
-        else:
+        if boxes is None or len(boxes) == 0:
+            logging.info("顔が検出されませんでした。")
             return None
 
-    def compare_with_all_faces(self, feature_vector: np.ndarray) -> bool:
+        # 最初の顔のみを使用（複数の顔に対応する場合はループを追加）
+        box = boxes[0]
+
+        # MTCNN の出力は [x1, y1, x2, y2] なので、OpenCV の形式に変換
+        x1, y1, x2, y2 = box  # 座標は float 型のまま使用
+
+        # 幅と高さを計算
+        w = x2 - x1
+        h = y2 - y1
+
+        # NumPy 配列に変換し、データ型を指定
+        face_box = np.array([[x1, y1, w, h]], dtype=np.float32)  # 形状を (1, 4) にする
+
+        # 顔をアラインメント
+        aligned_face = self.face_recognizer.alignCrop(frame, face_box)
+
+        # 特徴量を抽出
+        feature = self.face_recognizer.feature(aligned_face)
+
+        return feature
+    
+    def compare_with_all_faces(self, feature_vector: np.ndarray) -> Tuple[str, float]:
         """
         入力された特徴ベクトルをデータベース内の全ての特徴ベクトルと比較します。
-        
+
         Args:
             feature_vector (np.ndarray): 入力された顔の特徴ベクトル
-        
+
         Returns:
-            bool: 類似度が閾値を下回る顔が存在する場合はTrue、そうでない場合はFalse。
+            Tuple[str, float]: マッチした人の名前とスコア。マッチしない場合は ("unknown", 0.0)。
         """
         if feature_vector is None:
             logging.info("入力の特徴ベクトルが None です。")
-            return False
+            return "unknown", 0.0
 
-        threshold = 0.45  # 類似度の閾値
+        max_score = 0.0
+        best_match_name = "unknown"
 
         for face_data in self.collection.find():
-            stored_vector = face_data.get("feature_vector")
+            stored_vector = np.array(face_data.get("feature_vector"), dtype=np.float32)
             if stored_vector is None:
                 print(f"ユーザーID: {face_data['user_id']}, 名前: {face_data['name']} の特徴ベクトルが存在しません。")
                 continue
 
-            stored_vector = np.array(stored_vector)
-            distance = face_recognition.face_distance([stored_vector], feature_vector)[0]
+            score = self.face_recognizer.match(feature_vector, stored_vector, cv2.FaceRecognizerSF_FR_COSINE)
 
-            if distance < threshold:
-                return True 
+            if score > self.COSINE_THRESHOLD and score > max_score:
+                max_score = score
+                best_match_name = face_data["name"]
 
-        return False
+        return best_match_name, max_score
 
-    def detect_person(self, frame: np.ndarray) -> Optional[np.ndarray]:
+    def detect_person(self, frame: np.ndarray, name: str = "unknown") -> Optional[np.ndarray]:
         """
-        検出した人物の有無を確認し、顔が認識された場合は青枠を付けた画像を返す。
-        
+        検出した人物の有無を確認し、顔が認識された場合は青枠と名前を付けた画像を返す。
+
         Args:
             frame (np.ndarray): カメラからの入力フレーム
-        
+            name (str): 認識された人物の名前（デフォルトは "unknown"）
+
         Returns:
-            Optional[np.ndarray]: 青枠を付けた画像。顔が検出されない場合は None。
+            Optional[np.ndarray]: 青枠と名前を付けた画像。顔が検出されない場合は None。
         """
         image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        img_cropped = self.mtcnn(image, return_prob=False)  # 顔領域を検出
+        boxes, _ = self.mtcnn.detect(image)
 
-        if img_cropped is not None:
-            logging.info("人物が検出されました")
+        if boxes is not None:
+            logging.info(f"人物が検出されました: {name}")
 
-            boxes, _ = self.mtcnn.detect(image)
+            for box in boxes:
+                x1, y1, x2, y2 = map(int, box)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                # 顔の上に名前を表示
+                cv2.putText(frame, name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                            8, (255, 0, 0), 4)
 
-            if boxes is not None:
-                for box in boxes:
-                    x1, y1, x2, y2 = map(int, box) 
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2) 
-
-            return frame 
+            return frame
         else:
             logging.info("人物が検出されませんでした")
             return None
@@ -98,20 +132,26 @@ class Face:
     def extract_face_encoding(self, image_path: str) -> Optional[np.ndarray]:
         """
         画像ファイルから顔の特徴ベクトルを抽出します。
-        
+
         Args:
             image_path (str): 画像ファイルのパス
-        
+
         Returns:
-            Optional[np.ndarray]: 顔の特徴ベクトル。顔が検出されない場合はNone。
+            Optional[np.ndarray]: 顔の特徴ベクトル。顔が検出されない場合は None。
         """
-        image = face_recognition.load_image_file(image_path)
-        encodings = face_recognition.face_encodings(image)
-        if len(encodings) == 1:
-            return encodings[0]
-        elif len(encodings) > 1:
-            logging.error("複数の顔が検出されました。1つの顔のみをアップロードしてください。")
+        image = cv2.imread(image_path)
+        if image is None:
+            logging.error(f"画像を読み込めませんでした: {image_path}")
             return None
+
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(image_rgb)
+        boxes, _ = self.mtcnn.detect(pil_image)
+
+        feature_vector = self.feature_vector(image, boxes)
+
+        if feature_vector is not None:
+            return feature_vector
         else:
             logging.error("顔が検出されませんでした。")
             return None
